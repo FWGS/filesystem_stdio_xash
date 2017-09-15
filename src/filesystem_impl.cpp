@@ -12,10 +12,51 @@ but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
 */
+#include <stdio.h>
+#include <stdlib.h>
+#include <dlfcn.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdarg.h>
 #include "filesystem.h"
-#define XASH_DEDICATED
-#include "engine/common/common.h"
-#include "engine/common/filesystem.h"
+
+typedef struct file_s file_t;
+typedef off_t		fs_offset_t;
+typedef int qboolean;
+
+typedef struct
+{
+	int	numfilenames;
+	char	**filenames;
+	char	*filenamesbuffer;
+} search_t;
+
+struct searchpath_s
+{
+	char		filename[PATH_MAX];
+	struct pack_t		*pack;
+	struct wfile_t		*wad;
+	int		flags;
+	struct searchpath_s *next;
+};
+typedef struct searchpath_s searchpath_t;
+
+#define BIT( n )		(1U << ( n ))
+
+// filesystem flags
+#define FS_STATIC_PATH	BIT(0)	// FS_ClearSearchPath will be ignore this path
+#define FS_NOWRITE_PATH	BIT(1)	// default behavior - last added gamedir set as writedir. This flag disables it
+#define FS_GAMEDIR_PATH	BIT(2)	// just a marker for gamedir path
+#define FS_CUSTOM_PATH	BIT(3)	// map search allowed
+
+enum
+{
+	D_INFO = 1,	// "-dev 1", shows various system messages
+	D_WARN,		// "-dev 2", shows not critical system warnings
+	D_ERROR,		// "-dev 3", shows critical warnings
+	D_AICONSOLE,	// "-dev 4", special case for game aiconsole
+	D_NOTE		// "-dev 5", show system notifications for engine developers
+};
 
 class CXashFileSystem : public IFileSystem
 {
@@ -129,12 +170,124 @@ IFileSystem *filesystem( void )
 // =====================================
 // interface implementation
 
+
+#define ENGINE_DLL "libxash.so"
+// stringize utilites
+#define STR( x ) #x
+#define STR2( x ) STR( x )
+
+
+template<class T>
+inline void GET_PFN_( T &pfn, const char *szName, void *handle )
+{
+	pfn = (T)dlsym( handle, szName ); \
+	if( !pfn ) abort(); \
+}
+#define GET_PFN( name ) GET_PFN_( name, STR2( name ), handle )
+
+class CEngine
+{
+public:
+	CEngine()
+	{
+		char path[PATH_MAX];
+#ifdef __ANDROID__
+		snprintf( path, PATH_MAX, "%s/" ENGINE_DLL, getenv("XASH3D_ENGLIBDIR") );
+#else
+		snprintf( path, PATH_MAX, ENGINE_DLL );
+#endif
+
+		handle = dlopen( path, RTLD_NOW );
+
+		if( !handle )
+			abort();
+
+		GET_PFN( FS_AddGameDirectory );
+		GET_PFN( FS_FindFile );
+		GET_PFN( FS_CreatePath );
+		GET_PFN( FS_FileExists );
+		GET_PFN( FS_Open );
+		GET_PFN( FS_Close );
+		GET_PFN( FS_Seek );
+		GET_PFN( FS_Tell );
+		GET_PFN( FS_FileSize );
+		GET_PFN( FS_FileTime );
+		GET_PFN( FS_Eof );
+		GET_PFN( FS_Read );
+		GET_PFN( FS_Write );
+		GET_PFN( FS_VPrintf );
+		GET_PFN( FS_GetDiskPath );
+		GET_PFN( FS_GetSearchPaths );
+		GET_PFN( FS_Search );
+		GET_PFN( _Mem_Free );
+		GET_PFN( MsgDev );
+	}
+
+	~CEngine()
+	{
+		dlclose( handle );
+	}
+
+
+	int (*FS_Seek)( file_t *file, fs_offset_t offset, int whence );
+	int (*FS_VPrintf)( file_t *file, const char* format, va_list ap );
+	void (*FS_AddGameDirectory)( const char *, int );
+	void (*FS_CreatePath)( char *path );
+	void (*FS_Close)( file_t *file );
+	file_t *(*FS_Open)( const char *filepath, const char *mode, qboolean gamedironly );
+	qboolean (*FS_FileExists)( const char *filename, qboolean gamedironly );
+	qboolean (*FS_Eof)( file_t* file );
+	search_t *(*FS_Search)( const char *pattern, int caseinsensitive, int gamedironly );
+	fs_offset_t (*FS_Tell)( file_t* file );
+	fs_offset_t (*FS_FileSize)( const char *filename, qboolean gamedironly );
+	fs_offset_t (*FS_FileTime)( const char *filename, qboolean gamedironly );
+	fs_offset_t (*FS_Read)( file_t *file, void *buffer, size_t buffersize );
+	fs_offset_t (*FS_Write)( file_t *file, const void *data, size_t datasize );
+	const char *(*FS_GetDiskPath)( const char *name, qboolean gamedironly );
+	searchpath_t *(*FS_FindFile)( const char *name, int* index, qboolean gamedironly );
+	searchpath_t *(*FS_GetSearchPaths)(); // SINCE 0.19.1!!!
+
+	void (*MsgDev)( int level, const char *pMsg, ... );
+	void (*_Mem_Free)( void *data, const char *filename, int fileline );
+
+
+private:
+	void *handle;
+} engine;
+
+#define Mem_Free( ptr ) engine._Mem_Free( (ptr), __FILE__, __LINE__ );
+
 #define STUBCALL( format, ... ) printf( "FS_Stdio_Xash: called a stub: %s  ->(" format ")\n" , __PRETTY_FUNCTION__, __VA_ARGS__ );
 #define STUBCALL_VOID			printf( "FS_Stdio_Xash: called a stub: %s  ->(void)\n", __PRETTY_FUNCTION__ );
+
+#ifndef NDEBUG
 #define LOGCALL( format, ... )	printf( "FS_Stdio_Xash: called %s     ->(" format ")\n" , __PRETTY_FUNCTION__, __VA_ARGS__ )
 #define LOGCALL_VOID			printf( "FS_Stdio_Xash: called %s     ->(void)\n", __PRETTY_FUNCTION__ );
 
 #define LOGRETVAL( format, ret ) printf( "FS_Stdio_Xash:             \-> " format "\n", ret );
+#else
+#define LOGCALL( format, ... )
+#define LOGCALL_VOID
+#define LOGRETVAL( format, ret )
+#endif
+
+#ifdef _WIN32
+	const char CORRECT_PATH_SEPARATOR = '\\';
+	const char INCORRECT_PATH_SEPARATOR = '/';
+#else
+	const char CORRECT_PATH_SEPARATOR = '/';
+	const char INCORRECT_PATH_SEPARATOR = '\\';
+#endif
+
+
+static void FixSlashes( char *str )
+{
+	for( ; *str; str++ )
+	{
+		if( *str == INCORRECT_PATH_SEPARATOR )
+			*str = CORRECT_PATH_SEPARATOR;
+	}
+}
 
 void CXashFileSystem::Mount()
 {
@@ -155,7 +308,8 @@ void CXashFileSystem::RemoveAllSearchPaths( void )
 
 void CXashFileSystem::AddSearchPath(const char *pPath, const char *pathID)
 {
-	STUBCALL("%s,%s", pPath, pathID );;
+	engine.FS_AddGameDirectory( pPath, FS_CUSTOM_PATH );
+	LOGCALL("%s,%s", pPath, pathID );;
 }
 
 bool CXashFileSystem::RemoveSearchPath(const char *pPath)
@@ -166,20 +320,30 @@ bool CXashFileSystem::RemoveSearchPath(const char *pPath)
 
 void CXashFileSystem::RemoveFile(const char *pRelativePath, const char *pathID)
 {
-	STUBCALL( "%s, %s", pRelativePath, pathID );
+	LOGCALL( "%s, %s", pRelativePath, pathID );
+
+	searchpath_t *path = engine.FS_FindFile( pRelativePath, NULL, true );
+
+	if( !path )
+		return;
+
+	if( path->pack || path->wad )
+		return;
+
+	unlink( path->filename );
 }
 
 void CXashFileSystem::CreateDirHierarchy(const char *path, const char *pathID)
 {
 	char *pPath = strdup(path);
-	FS_CreatePath(pPath);
+	engine.FS_CreatePath(pPath);
 
 	free(pPath);
 }
 
 bool CXashFileSystem::FileExists(const char *pFileName)
 {
-	return FS_FileExists( pFileName, false );
+	return engine.FS_FileExists( pFileName, false );
 }
 
 bool CXashFileSystem::IsDirectory(const char *pFileName)
@@ -192,43 +356,43 @@ bool CXashFileSystem::IsDirectory(const char *pFileName)
 
 FileHandle_t CXashFileSystem::Open(const char *pFileName, const char *pOptions, const char *pathID)
 {
-	return FS_Open( pFileName, pOptions, IsGameDir( pathID ));
+	return engine.FS_Open( pFileName, pOptions, IsGameDir( pathID ));
 }
 
 void CXashFileSystem::Close( FileHandle_t file )
 {
-	FS_Close( (file_t*)file );
+	engine.FS_Close( (file_t*)file );
 }
 
 void CXashFileSystem::Seek( FileHandle_t file, int pos, FileSystemSeek_t seekType )
 {
-	FS_Seek( (file_t*)file, pos, seekType );
+	engine.FS_Seek( (file_t*)file, pos, seekType );
 }
 
 unsigned int CXashFileSystem::Tell(FileHandle_t file)
 {
-	return FS_Tell( (file_t*)file );
+	return engine.FS_Tell( (file_t*)file );
 }
 
 unsigned int CXashFileSystem::Size(FileHandle_t file)
 {
-	fs_offset_t orig = FS_Tell((file_t*)file);
+	fs_offset_t orig = engine.FS_Tell((file_t*)file);
 
-	FS_Seek( (file_t*)file, 0, SEEK_END );
-	fs_offset_t size = FS_Tell( (file_t*)file );
-	FS_Seek( (file_t*)file, orig, SEEK_SET );
+	engine.FS_Seek( (file_t*)file, 0, SEEK_END );
+	fs_offset_t size = engine.FS_Tell( (file_t*)file );
+	engine.FS_Seek( (file_t*)file, orig, SEEK_SET );
 
 	return size;
 }
 
 unsigned int CXashFileSystem::Size(const char *pFileName)
 {
-	return FS_FileSize( pFileName, false );
+	return engine.FS_FileSize( pFileName, false );
 }
 
 long CXashFileSystem::GetFileTime(const char *pFileName)
 {
-	return FS_FileTime( pFileName, false );
+	return engine.FS_FileTime( pFileName, false );
 }
 
 void CXashFileSystem::FileTimeToString(char *pStrip, int maxCharsIncludingTerminator, long fileTime)
@@ -242,9 +406,11 @@ bool CXashFileSystem::IsOk(FileHandle_t file)
 	file_t *nativeFile = (file_t*)file;
 	if( !file )
 	{
-		MsgDev( D_WARN, "Tried to IsOk NULL");
+		engine.MsgDev( D_WARN, "Tried to IsOk NULL");
 		return false;
 	}
+
+	// ferror()
 
 	return true;
 }
@@ -256,30 +422,30 @@ void CXashFileSystem::Flush(FileHandle_t file)
 
 bool CXashFileSystem::EndOfFile(FileHandle_t file)
 {
-	return FS_Eof( (file_t*) file );
+	return engine.FS_Eof( (file_t*) file );
 }
 
 int CXashFileSystem::Read( void *pOutput, int size, FileHandle_t file )
 {
-	return FS_Read( (file_t*)file, pOutput, size );
+	return engine.FS_Read( (file_t*)file, pOutput, size );
 }
 
 int CXashFileSystem::Write(const void *pInput, int size, FileHandle_t file)
 {
-	return FS_Write( (file_t*)file, pInput, size );
+	return engine.FS_Write( (file_t*)file, pInput, size );
 }
 
 char *CXashFileSystem::ReadLine(char *pOutput, int maxChars, FileHandle_t file)
 {
 	file_t *nativeFile = (file_t*)file;
 
-	if( FS_Eof( nativeFile ) )
+	if( engine.FS_Eof( nativeFile ) )
 		return NULL;
 
 	char *orig = pOutput;
-	for( int i = 0; i < maxChars && !FS_Eof( nativeFile ); i++, pOutput++ )
+	for( int i = 0; i < maxChars && !engine.FS_Eof( nativeFile ); i++, pOutput++ )
 	{
-		FS_Read( nativeFile, pOutput, 1 );
+		engine.FS_Read( nativeFile, pOutput, 1 );
 
 		if( *pOutput == '\n' )
 			return orig;
@@ -294,7 +460,7 @@ int CXashFileSystem::FPrintf(FileHandle_t file, const char *pFormat, ...)
 	va_list	args;
 
 	va_start( args, pFormat );
-	result = FS_VPrintf( (file_t*)file, pFormat, args );
+	result = engine.FS_VPrintf( (file_t*)file, pFormat, args );
 	va_end( args );
 
 	return result;
@@ -302,14 +468,14 @@ int CXashFileSystem::FPrintf(FileHandle_t file, const char *pFormat, ...)
 
 void *CXashFileSystem::GetReadBuffer(FileHandle_t file, int *outBufferSize, bool failIfNotInCache)
 {
-	// FS_LoadFile?
+	// engine.FS_LoadFile?
 	STUBCALL_VOID;
 	return NULL;
 }
 
 void CXashFileSystem::ReleaseReadBuffer(FileHandle_t file, void *readBuffer)
 {
-	// FS_CloseFile?
+	// engine.FS_CloseFile?
 	STUBCALL_VOID
 	return;
 }
@@ -327,7 +493,7 @@ const char *CXashFileSystem::FindFirst(const char *pWildCard, FileFindHandle_t *
 
 	findData_t *ptr = new findData_t;
 	if( pWildCard[0] == '/' ) pWildCard++;
-	ptr->search = FS_Search( pWildCard, false, IsGameDir( pathID) );
+	ptr->search = engine.FS_Search( pWildCard, false, IsGameDir( pathID) );
 
 	if( !ptr->search )
 	{
@@ -356,7 +522,8 @@ void CXashFileSystem::FindClose(FileFindHandle_t handle)
 {
 	findData_t *ptr = (findData_t *)handle;
 
-	if( ptr->search ) Mem_Free( ptr->search );
+	if( ptr->search )
+		Mem_Free( ptr->search );
 	delete ptr;
 	return;
 }
@@ -379,11 +546,11 @@ const char* CXashFileSystem::GetLocalPath(const char *pFileName, char *pLocalPat
 		strncpy( pLocalPath, pFileName, localPathBufferSize );
 		pLocalPath[localPathBufferSize-1] = 0;
 
-		COM_FixSlashes( pLocalPath );
+		FixSlashes( pLocalPath );
 		return pLocalPath;
 	}
 
-	const char *diskPath = FS_GetDiskPath( pFileName, false );
+	const char *diskPath = engine.FS_GetDiskPath( pFileName, false );
 
 	if( diskPath )
 	{
@@ -412,7 +579,7 @@ bool CXashFileSystem::FullPathToRelativePath(const char *pFullpath, char *pRelat
 	}
 
 	char *fullpath = realpath( pFullpath, NULL );
-	searchpath_t *sp = FS_GetSearchPaths();
+	searchpath_t *sp = engine.FS_GetSearchPaths();
 	char *real = NULL;
 
 	for( sp; sp; sp = sp->next )
@@ -459,8 +626,21 @@ bool CXashFileSystem::FullPathToRelativePath(const char *pFullpath, char *pRelat
 
 bool CXashFileSystem::GetCurrentDirectory(char *pDirectory, int maxlen)
 {
-	STUBCALL_VOID;
-	return false;
+#ifdef _WIN32
+	if ( !::GetCurrentDirectoryA( maxlen, pDirectory ) )
+#elif __linux__
+	if ( !getcwd( pDirectory, maxlen ) )
+#endif
+		return false;
+
+	FixSlashes(pDirectory);
+
+	// Strip the last slash
+	int len = strlen(pDirectory);
+	if( pDirectory[ len-1 ] == CORRECT_PATH_SEPARATOR )
+		pDirectory[ len-1 ] = 0;
+
+	return true;
 }
 
 void CXashFileSystem::PrintOpenedFiles()
@@ -514,13 +694,13 @@ int CXashFileSystem::SetVBuf(FileHandle_t stream, char *buffer, int mode, long s
 
 void CXashFileSystem::GetInterfaceVersion(char *p, int maxlen)
 {
-	STUBCALL_VOID;
+	*p = 0;
+	strncat( p, "Stdio", maxlen );
 }
 
 bool CXashFileSystem::IsFileImmediatelyAvailable(const char *pFileName)
 {
-	STUBCALL("%s", pFileName);
-	return false;
+	return true; // local, so available immediately
 }
 
 WaitForResourcesHandle_t CXashFileSystem::WaitForResources(const char *resourcelist)
@@ -555,14 +735,15 @@ bool CXashFileSystem::AddPackFile(const char *fullpath, const char *pathID)
 
 FileHandle_t CXashFileSystem::OpenFromCacheForRead(const char *pFileName, const char *pOptions, const char *pathID)
 {
-	STUBCALL( "%s, %s, %s", pFileName, pOptions, pathID );
-	return NULL;
+	LOGCALL( "%s, %s, %s", pFileName, pOptions, pathID );
+	return Open( pFileName, pOptions, pathID );
 }
 
 void CXashFileSystem::AddSearchPathNoWrite(const char *pPath, const char *pathID)
 {
-	STUBCALL("%s, %s", pPath, pathID)
-	return;
+	engine.FS_AddGameDirectory( pPath, FS_CUSTOM_PATH | FS_NOWRITE_PATH );
+
+	LOGCALL("%s, %s", pPath, pathID);
 }
 
 

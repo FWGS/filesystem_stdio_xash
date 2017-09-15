@@ -29,23 +29,13 @@ set (FS_XASH_LIBRARY filesystem_stdio)
 file (GLOB FS_XASH_SOURCES src/*.cpp)
 file (GLOB FS_XASH_HEADERS include/*.h)
 
-if( NOT XASH_SRC )
-	set(XASH_SRC "../xash3d/")
-endif()
-
-include_directories (include/
-	${XASH_SRC}/
-	${XASH_SRC}/common
-	${XASH_SRC}/engine
-	${XASH_SRC}/engine/common
-	${XASH_SRC}/pm_shared)
-add_definitions(-DXASH_DEDIDCATED)
+include_directories (include/)
 add_compile_options(-std=c++11)
 add_compile_options(-Wl,--no-undefined)
 
 add_library (${FS_XASH_LIBRARY} SHARED ${FS_XASH_SOURCES} ${FS_XASH_HEADERS})
 
-target_link_libraries(${FS_XASH_LIBRARY} ${CMAKE_DL_LIBS} -L/home/a1ba/projects/builtXash -lxash)
+# target_link_libraries(${FS_XASH_LIBRARY} ${CMAKE_DL_LIBS} -L/home/a1ba/projects/builtXash -lxash)
 
 set_target_properties (${FS_XASH_LIBRARY} PROPERTIES
 	POSITION_INDEPENDENT_CODE 1
