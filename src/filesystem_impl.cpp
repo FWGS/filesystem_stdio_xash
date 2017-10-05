@@ -18,45 +18,12 @@ GNU General Public License for more details.
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <time.h>
 #include "filesystem.h"
 
-typedef struct file_s file_t;
-typedef off_t		fs_offset_t;
 typedef int qboolean;
 
-typedef struct
-{
-	int	numfilenames;
-	char	**filenames;
-	char	*filenamesbuffer;
-} search_t;
-
-struct searchpath_s
-{
-	char		filename[PATH_MAX];
-	struct pack_t		*pack;
-	struct wfile_t		*wad;
-	int		flags;
-	struct searchpath_s *next;
-};
-typedef struct searchpath_s searchpath_t;
-
-#define BIT( n )		(1U << ( n ))
-
-// filesystem flags
-#define FS_STATIC_PATH	BIT(0)	// FS_ClearSearchPath will be ignore this path
-#define FS_NOWRITE_PATH	BIT(1)	// default behavior - last added gamedir set as writedir. This flag disables it
-#define FS_GAMEDIR_PATH	BIT(2)	// just a marker for gamedir path
-#define FS_CUSTOM_PATH	BIT(3)	// map search allowed
-
-enum
-{
-	D_INFO = 1,	// "-dev 1", shows various system messages
-	D_WARN,		// "-dev 2", shows not critical system warnings
-	D_ERROR,		// "-dev 3", shows critical warnings
-	D_AICONSOLE,	// "-dev 4", special case for game aiconsole
-	D_NOTE		// "-dev 5", show system notifications for engine developers
-};
+#include "fs_int.h"
 
 class CXashFileSystem : public IFileSystem
 {
@@ -170,22 +137,13 @@ IFileSystem *filesystem( void )
 // =====================================
 // interface implementation
 
-
+#ifdef _WIN32
+#define ENGINE_DLL "xash.dll"
+#else
 #define ENGINE_DLL "libxash.so"
-// stringize utilites
-#define STR( x ) #x
-#define STR2( x ) STR( x )
+#endif
 
-
-template<class T>
-inline void GET_PFN_( T &pfn, const char *szName, void *handle )
-{
-	pfn = (T)dlsym( handle, szName ); \
-	if( !pfn ) abort(); \
-}
-#define GET_PFN( name ) GET_PFN_( name, STR2( name ), handle )
-
-class CEngine
+class CEngine : public fs_api_t
 {
 public:
 	CEngine()
@@ -202,54 +160,18 @@ public:
 		if( !handle )
 			abort();
 
-		GET_PFN( FS_AddGameDirectory );
-		GET_PFN( FS_FindFile );
-		GET_PFN( FS_CreatePath );
-		GET_PFN( FS_FileExists );
-		GET_PFN( FS_Open );
-		GET_PFN( FS_Close );
-		GET_PFN( FS_Seek );
-		GET_PFN( FS_Tell );
-		GET_PFN( FS_FileSize );
-		GET_PFN( FS_FileTime );
-		GET_PFN( FS_Eof );
-		GET_PFN( FS_Read );
-		GET_PFN( FS_Write );
-		GET_PFN( FS_VPrintf );
-		GET_PFN( FS_GetDiskPath );
-		GET_PFN( FS_GetSearchPaths );
-		GET_PFN( FS_Search );
-		GET_PFN( _Mem_Free );
-		GET_PFN( MsgDev );
+		pfnFS_GetAPI FS_GetAPI = (pfnFS_GetAPI)dlsym( handle, FS_API_EXPORT );
+
+		if( !FS_GetAPI )
+			abort();
+
+		FS_GetAPI( this );
 	}
 
 	~CEngine()
 	{
 		dlclose( handle );
 	}
-
-
-	int (*FS_Seek)( file_t *file, fs_offset_t offset, int whence );
-	int (*FS_VPrintf)( file_t *file, const char* format, va_list ap );
-	void (*FS_AddGameDirectory)( const char *, int );
-	void (*FS_CreatePath)( char *path );
-	void (*FS_Close)( file_t *file );
-	file_t *(*FS_Open)( const char *filepath, const char *mode, qboolean gamedironly );
-	qboolean (*FS_FileExists)( const char *filename, qboolean gamedironly );
-	qboolean (*FS_Eof)( file_t* file );
-	search_t *(*FS_Search)( const char *pattern, int caseinsensitive, int gamedironly );
-	fs_offset_t (*FS_Tell)( file_t* file );
-	fs_offset_t (*FS_FileSize)( const char *filename, qboolean gamedironly );
-	fs_offset_t (*FS_FileTime)( const char *filename, qboolean gamedironly );
-	fs_offset_t (*FS_Read)( file_t *file, void *buffer, size_t buffersize );
-	fs_offset_t (*FS_Write)( file_t *file, const void *data, size_t datasize );
-	const char *(*FS_GetDiskPath)( const char *name, qboolean gamedironly );
-	searchpath_t *(*FS_FindFile)( const char *name, int* index, qboolean gamedironly );
-	searchpath_t *(*FS_GetSearchPaths)(); // SINCE 0.19.1!!!
-
-	void (*MsgDev)( int level, const char *pMsg, ... );
-	void (*_Mem_Free)( void *data, const char *filename, int fileline );
-
 
 private:
 	void *handle;
@@ -343,7 +265,7 @@ void CXashFileSystem::CreateDirHierarchy(const char *path, const char *pathID)
 
 bool CXashFileSystem::FileExists(const char *pFileName)
 {
-	return engine.FS_FileExists( pFileName, false );
+	return engine.FS_FindFile( pFileName, NULL, false ) != NULL;
 }
 
 bool CXashFileSystem::IsDirectory(const char *pFileName)
@@ -356,6 +278,10 @@ bool CXashFileSystem::IsDirectory(const char *pFileName)
 
 FileHandle_t CXashFileSystem::Open(const char *pFileName, const char *pOptions, const char *pathID)
 {
+	// SC 5.0 tries to parse this file and for some reason fails.
+	//if( strstr( pFileName, "materials.txt" ) )
+	//	return 0;
+
 	return engine.FS_Open( pFileName, pOptions, IsGameDir( pathID ));
 }
 
@@ -397,8 +323,10 @@ long CXashFileSystem::GetFileTime(const char *pFileName)
 
 void CXashFileSystem::FileTimeToString(char *pStrip, int maxCharsIncludingTerminator, long fileTime)
 {
-	STUBCALL("out, %i, %li", maxCharsIncludingTerminator, fileTime );
-	pStrip[0] = 0;
+	time_t tFileTime = fileTime;
+	
+	strncpy( pStrip, ctime( &tFileTime ), maxCharsIncludingTerminator );
+	pStrip[maxCharsIncludingTerminator-1] = '\0';
 }
 
 bool CXashFileSystem::IsOk(FileHandle_t file)
@@ -406,7 +334,7 @@ bool CXashFileSystem::IsOk(FileHandle_t file)
 	file_t *nativeFile = (file_t*)file;
 	if( !file )
 	{
-		engine.MsgDev( D_WARN, "Tried to IsOk NULL");
+		engine.Msg( "Tried to IsOk NULL");
 		return false;
 	}
 
@@ -442,16 +370,23 @@ char *CXashFileSystem::ReadLine(char *pOutput, int maxChars, FileHandle_t file)
 	if( engine.FS_Eof( nativeFile ) )
 		return NULL;
 
-	char *orig = pOutput;
-	for( int i = 0; i < maxChars && !engine.FS_Eof( nativeFile ); i++, pOutput++ )
+	char *p = pOutput;
+	*p = 0;
+	for( int i = 0; i < maxChars; i++ )
 	{
-		engine.FS_Read( nativeFile, pOutput, 1 );
+		*p = engine.FS_Getc( nativeFile );
 
-		if( *pOutput == '\n' )
-			return orig;
+		if( *p == '\n' || *p == -1 )
+			break;
+
+		p++;
 	}
 
-	return orig;
+
+	if( p != pOutput && *(p-1) == '\r' )
+		*(p-1) = 0;
+	else *p = 0;
+	return pOutput;
 }
 
 int CXashFileSystem::FPrintf(FileHandle_t file, const char *pFormat, ...)

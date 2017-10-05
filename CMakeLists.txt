@@ -23,13 +23,15 @@
 cmake_minimum_required(VERSION 2.6.0)
 project (FS_XASH)
 
+set(XASH_SDK "../xash3d/" CACHE STRING "path to Xash3D FWGS SDK")
+
 # set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
 set (FS_XASH_LIBRARY filesystem_stdio)
 
 file (GLOB FS_XASH_SOURCES src/*.cpp)
 file (GLOB FS_XASH_HEADERS include/*.h)
 
-include_directories (include/)
+include_directories (include/ ${XASH_SDK}/engine/)
 add_compile_options(-std=c++11)
 add_compile_options(-Wl,--no-undefined)
 
