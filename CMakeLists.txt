@@ -35,7 +35,7 @@ add_compile_options(-Wl,--no-undefined)
 
 add_library (${FS_XASH_LIBRARY} SHARED ${FS_XASH_SOURCES} ${FS_XASH_HEADERS})
 
-# target_link_libraries(${FS_XASH_LIBRARY} ${CMAKE_DL_LIBS} -L/home/a1ba/projects/builtXash -lxash)
+target_link_libraries(${FS_XASH_LIBRARY} ${CMAKE_DL_LIBS})
 
 set_target_properties (${FS_XASH_LIBRARY} PROPERTIES
 	POSITION_INDEPENDENT_CODE 1
