@@ -9,7 +9,7 @@ include $(XASH3D_CONFIG)
 
 LOCAL_MODULE := filesystem_stdio
 
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/include $(XASH3D_SRC)/engine
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/include $(XASH3DSRC)/engine
 
 LOCAL_CPPFLAGS += -std=c++0x
 
